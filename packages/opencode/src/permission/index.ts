@@ -7,6 +7,11 @@ import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
+import { Config } from "@/config/config"
+
+// Unanswered asks used to block the asking session forever (e.g. ACP subagent
+// asks that no client tracks). Bound the wait so any routing gap fails fast.
+export const DEFAULT_ASK_TIMEOUT_MS = 1_800_000
 
 export const Event = {
   Asked: EventV2.define({ type: "permission.asked", schema: PermissionV1.Request.fields }),
@@ -54,6 +59,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const config = yield* Config.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
         void ctx
@@ -109,10 +115,35 @@ export const layer = Layer.effect(
       const deferred = yield* Deferred.make<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>()
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
-      return yield* Effect.ensuring(
+
+      const cfg = yield* config.get()
+      const timeoutMs = cfg.experimental?.permission_ask_timeout_ms ?? DEFAULT_ASK_TIMEOUT_MS
+      const wait = Effect.ensuring(
         Deferred.await(deferred),
         Effect.sync(() => {
           pending.delete(id)
+        }),
+      )
+      if (timeoutMs <= 0) return yield* wait
+      return yield* wait.pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutMs,
+          orElse: () =>
+            Effect.gen(function* () {
+              pending.delete(id)
+              yield* Effect.logWarning("permission ask timed out, rejecting", {
+                id,
+                sessionID: info.sessionID,
+                permission: info.permission,
+                timeoutMs,
+              })
+              yield* events.publish(Event.Replied, {
+                sessionID: info.sessionID,
+                requestID: id,
+                reply: "reject",
+              })
+              return yield* new PermissionV1.RejectedError()
+            }),
         }),
       )
     })
@@ -223,8 +254,11 @@ export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<st
   )
 }
 
-export const defaultLayer = layer.pipe(Layer.provide(EventV2Bridge.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(EventV2Bridge.defaultLayer),
+  Layer.provide(Config.defaultLayer),
+)
 
-export const node = LayerNode.make(layer, [EventV2Bridge.node])
+export const node = LayerNode.make(layer, [EventV2Bridge.node, Config.node])
 
 export * as Permission from "."

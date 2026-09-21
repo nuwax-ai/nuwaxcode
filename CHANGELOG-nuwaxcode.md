@@ -2,6 +2,18 @@
 
 本文档总结了 `feat/nuwaxcode` 分支相对于主分支的主要更改。
 
+## Unreleased
+
+### 🐛 修复
+
+- **ACP 子智能体权限询问转发**：Task 派生的子会话（不在 ACP 会话注册表内）发出的 permission ask 此前被 `acp/permission.ts` 静默丢弃，导致子智能体无限等待、父会话 Task 卡死。现沿 `parentID` 链上溯，以已注册祖先会话身份转发 `session/request_permission`（上游 v1.18.20 已修 `opencode run` 模式同类问题，ACP 路径上游至今未修）；无法解析到任何已注册祖先的 ask 改为快速 `reject` 并输出 warn 日志，不再无限挂起。
+
+### ✨ 新特性 / 改进
+
+- **权限询问有界等待**：新增 `experimental.permission_ask_timeout_ms` 配置（默认 1800000 即 30 分钟，`0` 禁用）。无人应答的 permission ask 超时后按 `reject` 收场并发布 `permission.replied` 终态事件，任何路由缺口从"永久挂死"变为"快速失败"。
+
+---
+
 ## v1.3.18 (2026-06-30)
 
 > 正式版（npm `latest`）。版本号跳过 `1.3.0`–`1.3.17`：仓库内 `v1.3.0`–`v1.3.17` tag 已被上游 opencode 同步历史占用，避免 force-push 冲突。
