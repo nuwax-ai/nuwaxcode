@@ -109,9 +109,9 @@ jobs:
           rcs=$(find /tmp -type f -name rcodesign | head -1)
           "$rcs" --version
           shopt -s nullglob
-          bins=(packages/opencode/dist/darwin-*/bin/opencode)
+          bins=(packages/opencode/dist/nuwaxcode-darwin-*/bin/opencode)
           if [ ${#bins[@]} -eq 0 ]; then
-            echo "no darwin binaries found under packages/opencode/dist/darwin-*" >&2
+            echo "no darwin binaries found under packages/opencode/dist/nuwaxcode-darwin-*" >&2
             exit 1
           fi
           for bin in "${bins[@]}"; do
