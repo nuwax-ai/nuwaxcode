@@ -11,6 +11,7 @@
 ### ✨ 新特性 / 改进
 
 - **权限询问有界等待**：新增 `experimental.permission_ask_timeout_ms` 配置（默认 1800000 即 30 分钟，`0` 禁用）。无人应答的 permission ask 超时后按 `reject` 收场并发布 `permission.replied` 终态事件，任何路由缺口从"永久挂死"变为"快速失败"。
+- **darwin 产物修复（CI 重签）**：Linux 交叉编译的 darwin 二进制所带 linker-signed ad-hoc 签名在 macOS 上校验不过（exec 即 SIGKILL，存量问题，1.17.8 同样受影响；仅影响 darwin，Linux/Windows 不受影响）。CI 在打包前用 rcodesign（apple-codesign 0.29.0，校验 sha256）对 `dist/darwin-*/bin/opencode` 重新 ad-hoc 签名。
 
 ---
 

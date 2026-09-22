@@ -94,6 +94,31 @@ jobs:
             echo "Copied models.json to ${dir}bin/assets/"
           done
 
+      - name: Re-sign darwin binaries (ad-hoc)
+        # bun cross-compiles darwin targets on Linux; the embedded linker-signed
+        # ad-hoc signature does not validate on macOS, so AMFI kills the binary
+        # with SIGKILL on exec. rcodesign re-signs with matching hashes from
+        # Linux (pin the version + checksum; musl build runs on any runner).
+        run: |
+          version=0.29.0
+          url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${version}/apple-codesign-${version}-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSfL -o /tmp/rcs.tar.gz "$url"
+          expected=$(curl -sSfL "$url.sha256" | awk '{print $1}')
+          echo "$expected  /tmp/rcs.tar.gz" | sha256sum -c -
+          tar xzf /tmp/rcs.tar.gz -C /tmp
+          rcs=$(find /tmp -type f -name rcodesign | head -1)
+          "$rcs" --version
+          shopt -s nullglob
+          bins=(packages/opencode/dist/darwin-*/bin/opencode)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "no darwin binaries found under packages/opencode/dist/darwin-*" >&2
+            exit 1
+          fi
+          for bin in "${bins[@]}"; do
+            "$rcs" sign "$bin"
+          done
+          echo "Re-signed ${#bins[@]} darwin binary(ies)"
+
       - name: Create archives
         run: |
           cd packages/opencode
