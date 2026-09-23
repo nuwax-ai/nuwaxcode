@@ -1,7 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
-import { PlanExitTool } from "./plan"
+import { PlanExitTool, PlanEnterTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
@@ -96,6 +96,7 @@ export const layer = Layer.effect(
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
     const plan = yield* PlanExitTool
+    const planEnter = yield* PlanEnterTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
@@ -212,6 +213,7 @@ export const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          planEnter: Tool.init(planEnter),
         })
 
         return {
@@ -232,7 +234,11 @@ export const layer = Layer.effect(
             tool.skill,
             tool.patch,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
-            ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+            // plan 工具（模型侧提议切换 agent）：cli 之外对 ACP 客户端开放——
+            // 确认问题已由 acp/question.ts 桥接为 request_permission，不再挂起
+            ...(flags.experimentalPlanMode && (flags.client === "cli" || flags.client === "acp")
+              ? [tool.plan, tool.planEnter]
+              : []),
           ],
           task: tool.task,
           read: tool.read,

@@ -88,6 +88,21 @@ export function make(input: {
     : undefined
   if (events) input.eventSubscription?.(events)
 
+  /**
+   * 模式变化通知（best-effort）：set_mode / mode config option 成功后广播，
+   * 客户端据此刷新本地镜像，避免重复下发 set_mode。
+   */
+  const sendCurrentModeUpdate = (sessionId: string, modeId: string) => {
+    const connection = input.connection
+    if (!connection) return Effect.void
+    return Effect.promise(() =>
+      connection.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "current_mode_update", currentModeId: modeId },
+      }),
+    ).pipe(Effect.ignore)
+  }
+
   const initialize = Effect.fn("ACP.initialize")(function* (params: InitializeRequest) {
     const started = performance.now()
     const authMethod: AuthMethod = {
@@ -446,6 +461,7 @@ export function make(input: {
         return yield* new ACPError.InvalidModeError({ mode: params.value })
       }
       const state = yield* session.setMode(params.sessionId, params.value)
+      yield* sendCurrentModeUpdate(params.sessionId, params.value)
       return {
         configOptions: configOptions(snapshot, {
           model: state.model ?? selectDefaultModel(snapshot),
@@ -465,6 +481,7 @@ export function make(input: {
       return yield* new ACPError.InvalidModeError({ mode: params.modeId })
     }
     yield* session.setMode(params.sessionId, params.modeId)
+    yield* sendCurrentModeUpdate(params.sessionId, params.modeId)
     return {}
   })
 
