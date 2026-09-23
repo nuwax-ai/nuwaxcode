@@ -234,7 +234,8 @@ export function make(input: {
       "session",
     )
     const restored = restoreFromMessages(messages.map((item) => item.info))
-    const model = restored.model ?? selectDefaultModel(snapshot)
+    // 切模型重建进程后 session 旧模型引用可能已不在新进程注册表中——回退当前默认
+    const { model } = resolveModel(restored.model, snapshot)
     const state = yield* session.load({
       id: params.sessionId,
       cwd: params.cwd,
@@ -319,7 +320,8 @@ export function make(input: {
       "session",
     )
     const restored = restoreFromMessages(messages.map((item) => item.info))
-    const model = restored.model ?? selectDefaultModel(snapshot)
+    // 切模型重建进程后 session 旧模型引用可能已不在新进程注册表中——回退当前默认
+    const { model } = resolveModel(restored.model, snapshot)
     const state = yield* session.load({
       id: params.sessionId,
       cwd: params.cwd,
@@ -388,7 +390,8 @@ export function make(input: {
       "session",
     )
     const restored = restoreFromMessages(messages.map((item) => item.info))
-    const model = restored.model ?? selectDefaultModel(snapshot)
+    // 切模型重建进程后 session 旧模型引用可能已不在新进程注册表中——回退当前默认
+    const { model } = resolveModel(restored.model, snapshot)
     const state = yield* session.load({
       id: forked.id,
       cwd: params.cwd,
@@ -512,8 +515,10 @@ export function make(input: {
     prompt: Effect.fn("ACP.prompt")(function* (params: PromptRequest) {
       const current = yield* session.get(params.sessionId)
       const snapshot = yield* directorySnapshot(current.cwd)
-      const selected = current.model ?? selectDefaultModel(snapshot)
-      if (!current.model) {
+      const { model: selected, fellBack } = resolveModel(current.model, snapshot)
+      if (!current.model || fellBack) {
+        // 首次或旧引用失效（切模型重建）：把 session 引用切到当前生效模型，
+        // 后续 prompt 不再走回退分支
         yield* session.setModel(params.sessionId, selected)
       }
       const variant = current.variant ?? selectVariant(snapshot, selected)
@@ -837,6 +842,27 @@ function selectDefaultModel(snapshot: Directory.Snapshot) {
   const model = snapshot.modelOptions[0]
   if (model) return { providerID: model.providerID, modelID: model.modelID }
   return { providerID: "unknown" as ProviderV2.ID, modelID: "unknown" as ModelV2.ID }
+}
+
+/**
+ * 解析 session 的模型引用：引用在当前进程的 modelOptions 中存在则沿用（正常
+ * 延续语义——用户为会话选定的模型）；不存在则回退当前默认模型。
+ *
+ * 触发场景：agent_runner 侧重切模型（model id 变化）会重建 agent 进程，新进程
+ * 只注册新模型；而 session DB 持久化了旧模型引用（如 deepseek-v4-flash），
+ * prompt 时 SessionPrompt.getModel 解析不到 → ProviderModelNotFoundError。
+ * 回退到新进程的默认模型正是"切换模型"的语义。
+ */
+function resolveModel(
+  ref: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined,
+  snapshot: Directory.Snapshot,
+) {
+  if (!ref) return { model: selectDefaultModel(snapshot), fellBack: false }
+  const exists = snapshot.modelOptions.some(
+    (m) => m.providerID === ref.providerID && m.modelID === ref.modelID,
+  )
+  if (exists) return { model: ref, fellBack: false }
+  return { model: selectDefaultModel(snapshot), fellBack: true }
 }
 
 function detectSlashCommand(parts: ReturnType<typeof promptContentToParts>) {

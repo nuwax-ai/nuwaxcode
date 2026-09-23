@@ -6,6 +6,7 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Database } from "@opencode-ai/core/database/database"
 import { Permission } from "../../src/permission"
+import { Config } from "../../src/config/config"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
@@ -14,8 +15,28 @@ import { MessageID, SessionID } from "../../src/session/schema"
 
 const events = EventV2Bridge.defaultLayer
 const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
+// Permission.ask() reads its timeout from Config; tests override it per-test
+// through this mutable holder (reset via onExit so later tests see the default).
+let configOverrides: Record<string, unknown> = {}
+const configStub = Layer.succeed(
+  Config.Service,
+  Config.Service.of({
+    get: () => Effect.succeed(configOverrides as never),
+    getGlobal: () => Effect.succeed(configOverrides as never),
+    getConsoleState: () => Effect.succeed({} as never),
+    update: () => Effect.void,
+    updateGlobal: () => Effect.succeed({ info: configOverrides as never, changed: false }),
+    invalidate: () => Effect.void,
+    directories: () => Effect.succeed([]),
+    waitForDependencies: () => Effect.void,
+  }),
+)
 const env = Layer.mergeAll(
-  Permission.layer.pipe(Layer.provide(Database.defaultLayer), Layer.provide(events)),
+  Permission.layer.pipe(
+    Layer.provide(Database.defaultLayer),
+    Layer.provide(events),
+    Layer.provide(configStub),
+  ),
   events,
   CrossSpawnSpawner.defaultLayer,
   InstanceStore.defaultLayer.pipe(Layer.provide(noopBootstrap)),
@@ -716,6 +737,56 @@ it.instance(
       yield* reply({ requestID: PermissionV1.ID.make("per_test1"), reply: "once" })
       yield* Fiber.join(fiber)
     }),
+  { git: true },
+)
+
+// ask timeout tests
+
+it.instance(
+  "ask - times out and rejects when no client ever answers",
+  () =>
+    Effect.gen(function* () {
+      configOverrides = { experimental: { permission_ask_timeout_ms: 50 } }
+      const fiber = yield* ask({
+        id: PermissionV1.ID.make("per_timeout1"),
+        sessionID: SessionID.make("session_test"),
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(PermissionV1.RejectedError)
+      expect(yield* list()).toHaveLength(0)
+    }).pipe(Effect.onExit(() => Effect.sync(() => (configOverrides = {})))),
+  { git: true },
+)
+
+it.instance(
+  "ask - timeout disabled with 0 keeps waiting for a manual reply",
+  () =>
+    Effect.gen(function* () {
+      configOverrides = { experimental: { permission_ask_timeout_ms: 0 } }
+      const fiber = yield* ask({
+        id: PermissionV1.ID.make("per_timeout2"),
+        sessionID: SessionID.make("session_test"),
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* Effect.sleep("150 millis")
+      expect(yield* list()).toHaveLength(1)
+
+      yield* reply({ requestID: PermissionV1.ID.make("per_timeout2"), reply: "once" })
+      yield* Fiber.join(fiber)
+    }).pipe(Effect.onExit(() => Effect.sync(() => (configOverrides = {})))),
   { git: true },
 )
 

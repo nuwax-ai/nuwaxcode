@@ -36,6 +36,7 @@ function makeSessionService() {
 function createHarness(
   requestPermission: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse> = () =>
     Promise.resolve({ outcome: { outcome: "selected", optionId: "once" } }),
+  sessionGet?: (params: { sessionID: string }) => Promise<{ data?: { parentID?: string; directory?: string } }>,
 ) {
   const replies: PermissionReplyParams[] = []
   const requests: RequestPermissionRequest[] = []
@@ -49,6 +50,9 @@ function createHarness(
       },
     },
     session: {
+      get:
+        sessionGet ??
+        (() => Promise.resolve({ data: undefined as { parentID?: string; directory?: string } | undefined })),
       message: () => Promise.resolve({ data: undefined }),
     },
   } as unknown as OpencodeClient
@@ -269,5 +273,64 @@ describe("acp permissions", () => {
       ["perm_1", "once"],
       ["perm_2", "always"],
     ])
+  })
+
+  it("forwards a subagent session ask via its registered ancestor", async () => {
+    const sessionGet = (params: { sessionID: string }) => {
+      if (params.sessionID === "ses_child") return Promise.resolve({ data: { parentID: "ses_parent" } })
+      return Promise.resolve({ data: undefined })
+    }
+    const harness = createHarness(undefined, sessionGet)
+    await createSession(harness.session, "ses_parent", "/workspace/parent")
+
+    harness.subscription.handle(permissionAsked("ses_child", "perm_sub"))
+
+    await pollUntil(() => harness.replies.length === 1, "subagent permission was never replied")
+
+    expect(harness.requests).toHaveLength(1)
+    expect(harness.requests[0].sessionId).toBe("ses_parent")
+    expect(harness.replies[0]).toEqual({ requestID: "perm_sub", reply: "once", directory: "/workspace/parent" })
+  })
+
+  it("walks multiple ancestor levels to find the registered session", async () => {
+    const sessionGet = (params: { sessionID: string }) => {
+      const parents: Record<string, string> = { ses_child: "ses_mid", ses_mid: "ses_parent" }
+      const parentID = parents[params.sessionID]
+      return Promise.resolve({ data: parentID ? { parentID } : undefined })
+    }
+    const harness = createHarness(undefined, sessionGet)
+    await createSession(harness.session, "ses_parent", "/workspace/root")
+
+    harness.subscription.handle(permissionAsked("ses_child", "perm_nested"))
+
+    await pollUntil(() => harness.replies.length === 1, "nested subagent permission was never replied")
+
+    expect(harness.requests[0].sessionId).toBe("ses_parent")
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_nested", reply: "once", directory: "/workspace/root" })
+  })
+
+  it("rejects an ask from a session with no registered ancestor", async () => {
+    const sessionGet = () => Promise.resolve({ data: {} })
+    const harness = createHarness(undefined, sessionGet)
+
+    harness.subscription.handle(permissionAsked("ses_orphan", "perm_orphan"))
+
+    await pollUntil(() => harness.replies.length === 1, "orphan permission was never rejected")
+
+    expect(harness.requests).toHaveLength(0)
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_orphan", reply: "reject" })
+    expect(harness.replies[0].directory).toBeUndefined()
+  })
+
+  it("rejects an ask when the session lookup fails", async () => {
+    const sessionGet = () => Promise.reject(new Error("session lookup failed"))
+    const harness = createHarness(undefined, sessionGet)
+
+    harness.subscription.handle(permissionAsked("ses_unknown", "perm_lookup_failed"))
+
+    await pollUntil(() => harness.replies.length === 1, "failed lookup permission was never rejected")
+
+    expect(harness.requests).toHaveLength(0)
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_lookup_failed", reply: "reject" })
   })
 })
