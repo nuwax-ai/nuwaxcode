@@ -2,10 +2,12 @@
 # npm 发布与校验（与 release.sh 后半段一致，供本地与 CI 共用）
 # Usage: ./scripts/release-publish.sh <version>
 # Env:
-#   NPM_DIST_TAG          dist-tag；未设置时预发布版本（含 '-'）自动用 beta，稳定版用 latest
-#   SKIP_REGISTRY_VERIFY  设为 1 跳过发布后 registry 校验
-#   NODE_AUTH_TOKEN       CI 下发 npm token（本地可用 npm login）
-#   SKIP_DOCKER_PUBLISH   默认 1，仅发 npm
+#   NPM_DIST_TAG              dist-tag；未设置时预发布版本（含 '-'）自动用 beta，稳定版用 latest
+#   SKIP_REGISTRY_VERIFY      设为 1 跳过发布后 registry 校验
+#   NPM_PROPAGATION_ATTEMPTS  发布后 registry 校验的最大重试轮数，默认 25
+#   NPM_PROPAGATION_DELAY_MS  发布后 registry 校验的重试间隔毫秒数，默认 60000
+#   NODE_AUTH_TOKEN           CI 下发 npm token（本地可用 npm login）
+#   SKIP_DOCKER_PUBLISH       默认 1，仅发 npm
 set -euo pipefail
 
 VERSION="${1:-}"
@@ -89,9 +91,11 @@ bun run script/publish.ts
 if [ "${SKIP_REGISTRY_VERIFY:-}" = "1" ]; then
   echo "⏭️  SKIP_REGISTRY_VERIFY=1，跳过 npm optional 完整性校验"
 else
-  echo "🔍 Waiting for npm registry propagation..."
-  sleep 45
-  echo "🔍 Post-release version consistency checks..."
+  # npm 受理发布后，新版本可查询存在数秒到二十余分钟的传播延迟；
+  # check-version-consistency 内部已带按轮次退避的重试（默认约 25 分钟预算），
+  # 这里只保留短暂等待，避免首轮查询必然撞上 404。
+  echo "🔍 Post-release version consistency checks (with propagation retries)..."
+  sleep 5
   bun run script/check-version-consistency.ts --phase post --version "$VERSION"
 fi
 
