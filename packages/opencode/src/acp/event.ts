@@ -11,6 +11,7 @@ import type {
 import { Effect } from "effect"
 import { ACPSession } from "./session"
 import { ACPPermission } from "./permission"
+import { ACPQuestion } from "./question"
 import { partsToContentChunks, type ReplayPart } from "./content"
 import {
   duplicateRunningToolUpdate,
@@ -40,7 +41,9 @@ export class Subscription {
   private readonly abort = new AbortController()
   private readonly shellSnapshots = new Map<string, string>()
   private readonly toolStarts = new Set<string>()
+  private readonly toolNames = new Map<string, string>()
   private readonly permission: ACPPermission.Handler
+  private readonly question: ACPQuestion.Handler
   private started = false
 
   constructor(
@@ -51,6 +54,10 @@ export class Subscription {
     },
   ) {
     this.permission = new ACPPermission.Handler(input)
+    this.question = new ACPQuestion.Handler({
+      ...input,
+      toolNameFor: (callID) => this.toolNames.get(callID),
+    })
   }
 
   start() {
@@ -70,6 +77,13 @@ export class Subscription {
       case "permission.asked":
         this.permission.handle(event)
         return
+      case "question.asked":
+        // plan_exit / plan_enter 等工具的确认问题：桥接为 ACP 权限请求，
+        // 否则 Question.ask 在 ACP 下无人应答会挂起
+        this.question.handle(event)
+        return
+      case "todo.updated":
+        return this.handleTodoUpdated(event)
       case "message.part.updated":
         return this.handlePartUpdated(event)
       case "message.part.delta":
@@ -125,6 +139,32 @@ export class Subscription {
       }
       if (!this.abort.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 1000))
     }
+  }
+
+  /**
+   * TodoWrite → ACP plan 条目（全量替换语义）。opencode todo 有 cancelled
+   * 状态而 ACP PlanEntry 没有，未知值回落 pending/medium。
+   */
+  private async handleTodoUpdated(event: Extract<Event, { type: "todo.updated" }>) {
+    const { sessionID, todos } = event.properties
+    if (todos.length === 0) return
+    const session = await Effect.runPromise(this.input.session.tryGet(sessionID))
+    if (!session) return
+
+    await this.input.connection.sessionUpdate({
+      sessionId: sessionID,
+      update: {
+        sessionUpdate: "plan",
+        entries: todos.map((todo) => ({
+          content: todo.content,
+          priority: todo.priority === "high" || todo.priority === "low" ? todo.priority : "medium",
+          status:
+            todo.status === "in_progress" || todo.status === "completed"
+              ? todo.status
+              : "pending",
+        })),
+      },
+    })
   }
 
   private async handlePartUpdated(event: EventMessagePartUpdated) {
@@ -232,6 +272,7 @@ export class Subscription {
   }
 
   private async handleToolPart(sessionId: string, part: ToolPart) {
+    this.toolNames.set(part.callID, part.tool)
     await this.toolStart(sessionId, part)
 
     switch (part.state.status) {
@@ -330,6 +371,7 @@ export class Subscription {
   private clearTool(toolCallId: string) {
     this.toolStarts.delete(toolCallId)
     this.shellSnapshots.delete(toolCallId)
+    this.toolNames.delete(toolCallId)
   }
 }
 
