@@ -13,6 +13,7 @@
  */
 import { $ } from "bun"
 import pkg from "../package.json"
+import { propagationAttempts, registryVersion, waitFor } from "./lib/registry-propagation"
 
 type Phase = "pre" | "post"
 
@@ -124,14 +125,13 @@ async function ensureLocalSmokeVersion(version: string) {
 }
 
 async function ensureRegistryMainVersion(version: string) {
-  const check = await $`npm view nuwaxcode@${version} version --registry=https://registry.npmjs.org/`
-    .quiet()
-    .nothrow()
-  if (check.exitCode !== 0) {
-    console.error(`registry 中未查到 nuwaxcode@${version}。`)
+  const spec = `nuwaxcode@${version}`
+  // npm 受理发布后新版本需要传播时间，单次查询会把传播延迟误判为发布失败。
+  const actual = await waitFor(`registry 主包 ${spec}`, () => registryVersion(spec))
+  if (actual === undefined) {
+    console.error(`registry 中未查到 ${spec}（已重试 ${propagationAttempts} 次，超出 npm 传播预算）。`)
     process.exit(1)
   }
-  const actual = check.stdout.toString().trim()
   if (actual !== version) {
     console.error(`registry 主包版本不一致：${actual}，期望 ${version}。`)
     process.exit(1)
@@ -156,12 +156,21 @@ async function ensureInstalledCliVersion(version: string) {
     "npm i \"nuwaxcode@" + version + "\" --registry=https://registry.npmjs.org/ >/dev/null 2>&1",
     "./node_modules/.bin/nuwaxcode -v",
   ].join(" && ")
-  const run = await $`bash -lc ${cmd}`.quiet().nothrow()
-  if (run.exitCode !== 0) {
+  // 安装失败多为 optional 子包传播滞后；完整安装较重，只做少量重试。
+  const actual = await waitFor(
+    `安装态 CLI nuwaxcode@${version}`,
+    async () => {
+      const run = await $`bash -lc ${cmd}`.quiet().nothrow()
+      if (run.exitCode !== 0) return undefined
+      const out = run.stdout.toString().trim()
+      return out || undefined
+    },
+    3,
+  )
+  if (actual === undefined) {
     console.error("安装态 CLI 版本校验执行失败。")
     process.exit(1)
   }
-  const actual = run.stdout.toString().trim()
   if (actual !== version) {
     console.error(`安装态 CLI 版本不一致：${actual}，期望 ${version}。`)
     process.exit(1)
