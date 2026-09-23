@@ -12,8 +12,18 @@
  */
 import { $ } from "bun"
 
-export const propagationAttempts = Number(process.env.NPM_PROPAGATION_ATTEMPTS ?? 25)
-export const propagationDelayMs = Number(process.env.NPM_PROPAGATION_DELAY_MS ?? 60_000)
+function readIntEnv(name: string, fallback: number, min: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw === "") return fallback
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`环境变量 ${name} 需为 >= ${min} 的整数，当前值：“${raw}”`)
+  }
+  return value
+}
+
+export const propagationAttempts = readIntEnv("NPM_PROPAGATION_ATTEMPTS", 25, 1)
+export const propagationDelayMs = readIntEnv("NPM_PROPAGATION_DELAY_MS", 60_000, 0)
 
 export async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms))
