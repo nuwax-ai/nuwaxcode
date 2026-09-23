@@ -16,6 +16,11 @@ const permissionOptions: PermissionOption[] = [
   { optionId: "reject", kind: "reject_once", name: "Reject" },
 ]
 
+// Task subagents create server-side child sessions that never enter the ACP
+// session registry, so resolving them to a registered ancestor must walk the
+// parentID chain. The cap guards against corrupt cycles in stored parent links.
+const MAX_SESSION_DEPTH = 10
+
 export class Handler {
   private readonly queues = new Map<string, Promise<void>>()
 
@@ -43,8 +48,20 @@ export class Handler {
 
   private async process(event: PermissionEvent) {
     const permission = event.properties
-    const session = await Effect.runPromise(this.input.session.tryGet(permission.sessionID))
-    if (!session) return
+    const session = await this.resolveSession(permission.sessionID)
+    if (!session) {
+      // No registered session and no registered ancestor: nothing can answer
+      // this ask. Rejecting fails fast instead of leaving the asking session
+      // blocked on a Deferred that will never complete.
+      await Effect.runPromise(
+        Effect.logWarning("permission ask from unresolvable session, rejecting", {
+          sessionID: permission.sessionID,
+          permission: permission.permission,
+        }),
+      )
+      await this.reply(permission.id, "reject")
+      return
+    }
 
     if (!this.input.connection.requestPermission) {
       await this.reply(permission.id, "reject", session.cwd)
@@ -53,7 +70,7 @@ export class Handler {
 
     const result = await this.input.connection
       .requestPermission({
-        sessionId: permission.sessionID,
+        sessionId: session.id,
         toolCall: {
           toolCallId: permission.tool?.callID ?? permission.id,
           status: "pending",
@@ -84,11 +101,39 @@ export class Handler {
     await this.reply(permission.id, reply, session.cwd)
   }
 
-  private async reply(requestID: string, reply: Reply, directory: string) {
+  private async resolveSession(sessionID: string): Promise<ACPSession.Info | undefined> {
+    const direct = await Effect.runPromise(this.input.session.tryGet(sessionID))
+    if (direct) return direct
+
+    let current = sessionID
+    for (let depth = 0; depth < MAX_SESSION_DEPTH; depth++) {
+      const info = await this.input.sdk.session
+        .get({ sessionID: current })
+        .then((result) => result.data)
+        .catch(() => undefined)
+      const parentID = info?.parentID
+      if (!parentID) return undefined
+
+      const parent = await Effect.runPromise(this.input.session.tryGet(parentID))
+      if (parent) {
+        await Effect.runPromise(
+          Effect.logInfo("permission ask from descendant session, forwarding via registered ancestor", {
+            sessionID,
+            ancestorID: parent.id,
+          }),
+        )
+        return parent
+      }
+      current = parentID
+    }
+    return undefined
+  }
+
+  private async reply(requestID: string, reply: Reply, directory?: string) {
     await this.input.sdk.permission.reply({
       requestID,
       reply,
-      directory,
+      ...(directory ? { directory } : {}),
     })
   }
 

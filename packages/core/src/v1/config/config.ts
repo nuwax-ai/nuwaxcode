@@ -179,6 +179,10 @@ export const Info = Schema.Struct({
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",
       }),
+      permission_ask_timeout_ms: Schema.optional(NonNegativeInt).annotate({
+        description:
+          "Timeout in milliseconds for permission asks that no client answers before they are rejected (0 disables, default 1800000)",
+      }),
       policies: Schema.optional(Schema.mutable(Schema.Array(ConfigExperimental.Policy))).annotate({
         description: "Policy statements applied to supported resources, such as provider access",
       }),
